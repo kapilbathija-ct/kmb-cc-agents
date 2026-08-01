@@ -4,6 +4,9 @@
   "type": "module",
   "main": "src/index.js",
   "private": true,
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "start": "node src/index.js",
     "start:dev": "nodemon -q src/index.js",
@@ -28,7 +31,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
-    "@commercetools-backend/loggers": "^25.1.0",
+    "@commercetools-backend/loggers": "^27.9.0",
     "body-parser": "^1.20.1",
     "dotenv": "^16.4.5",
     "express": "^4.22.1",
