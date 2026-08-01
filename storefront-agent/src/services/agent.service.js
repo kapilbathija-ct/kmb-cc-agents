@@ -4,8 +4,12 @@ import path from 'path';
 import { getAnthropicClient } from '../clients/anthropic.client.js';
 import { getMcpAccessToken } from '../clients/mcp-auth.client.js';
 import { getLangfuseClient } from '../clients/langfuse.client.js';
+import { findUnauthorizedCartWrites } from './authorization.service.js';
 import configUtils from '../utils/config.util.js';
 import { logger } from '../utils/logger.utils.js';
+
+const BLOCKED_REPLY_TEXT =
+  "Sorry, something went wrong processing that - please try again.";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_PROMPT = readFileSync(
@@ -59,6 +63,30 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
     });
 
     generation.end({ output: response.content });
+
+    // The Managed MCP Server doesn't enforce per-customer authorization in
+    // API Client mode (that's on us - see authorization.service.js), and
+    // Anthropic's native connector executes tool calls before we ever see
+    // this response, so this is a post-hoc check: if a cart write didn't
+    // land on this customer's own cart, don't hand the reply back.
+    const { violations } = findUnauthorizedCartWrites(response.content, identityId);
+
+    if (violations.length > 0) {
+      logger.error('storefront-agent: blocked reply with unauthorized cart write(s)', {
+        identityId,
+        sessionId,
+        violations,
+      });
+      trace.update({
+        output: 'blocked: unauthorized cart write detected',
+        metadata: { violations },
+      });
+      await langfuse.flushAsync();
+
+      // Don't persist this turn's assistant content - keep history at its
+      // last known-good state rather than replaying the tainted turn forward.
+      return { replyText: BLOCKED_REPLY_TEXT, updatedHistory: history };
+    }
 
     const replyText = response.content
       .filter((block) => block.type === 'text')

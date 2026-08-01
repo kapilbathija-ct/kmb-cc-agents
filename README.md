@@ -40,6 +40,28 @@ run in contexts where the caller already knows who the real user is
 for identity (NAT, shared networks, mobile carrier IPs) and would leak
 context across unrelated users behind the same address.
 
+**Post-hoc authorization check on cart writes (storefront-agent only).**
+commercetools' own docs are explicit that in API Client auth mode (what both
+agents use), per-caller authorization isn't enforced by the Managed MCP
+Server itself — "you are responsible for filtering the appropriate tools for
+your users." Anthropic's native MCP connector also runs tool calls
+server-side, so there's no hook to intercept a call before it executes.
+`storefront-agent` works around this with a lightweight, non-invasive
+pattern instead: after each Anthropic response comes back, it inspects the
+`mcp_tool_use`/`mcp_tool_result` blocks already in that response and
+confirms every `create_carts`/`update_carts` call actually landed on the
+authenticated `customerId`'s own cart (failing closed — an unverifiable
+result is treated as a violation) — see `src/services/authorization.service.js`.
+No changes to `connect.yaml`, `MCP_SERVER_URL`, or the MCP server config are
+needed; the model still talks to the same managed URL. This is a detective
+control (the write already happened by the time it's checked), which is an
+acceptable trade for a scope limited to cart operations (cheap to disregard/
+revert) — not something to carry over as-is to a write that creates a
+permanent financial record. `csr-agent` doesn't have this check: its
+Order-creating writes aren't cleanly reversible, so a detective control
+there is materially weaker and is called out as a real follow-up rather than
+solved here.
+
 **No long-lived MCP token embedded in config.** Managed MCP Server OAuth
 tokens can live up to 30 days, but rather than deploy one and have it expire
 mid-project, each app holds only the underlying API Client's `MCP_CLIENT_ID`/
