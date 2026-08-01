@@ -103,6 +103,24 @@ secrets (`ANTHROPIC_API_KEY`, Langfuse keys) are declared once via
   validation, inbound-auth middleware, and the cart-ownership authorization
   check are covered; the Anthropic/MCP call path and Langfuse tracing are not
   yet unit-tested (would need mocking the Anthropic SDK and Langfuse client).
+- **A single tool call can return enough data to overflow the context
+  window.** Confirmed live: a malformed `read_product_projections` predicate
+  didn't error, it silently returned an effectively-unfiltered ~130-product
+  result set (500KB+ of JSON) — two of those in one conversation produced a
+  real `400 "prompt is too long"` failure from Anthropic. Nothing here
+  currently bounds a single tool result's size or a turn's total tool-result
+  volume before it's sent back to the model; see the corresponding
+  `commercetools-es-workspace` mcp-feedback entry for the platform-side gap.
+  A client-side guard (truncate/summarize oversized tool results before
+  replay) would need to sit in `agent.service.js` if this recurs in practice.
+- **Model compliance with the injected identity is not 100% reliable.**
+  Confirmed live: even with the customerId explicitly injected into the
+  system prompt and the instruction to always use it, the model sometimes
+  omitted `customerId` from a `create_carts` call anyway. This is exactly
+  the failure mode `authorization.service.js` exists to catch (and it did,
+  correctly blocking the reply) — but it's worth being explicit that the
+  injected-identity approach reduces, not eliminates, the need for the
+  post-hoc check.
 
 ## Local development
 
