@@ -22,12 +22,12 @@ here.
 ```
 caller (BFF / MC custom-app backend)
   -> POST /{app}/chat  (Authorization: Bearer <INBOUND_API_TOKEN>)
-    -> rate-limit middleware (Redis/Upstash, keyed by source IP)
-    -> load conversation history (Redis/Upstash, keyed by identity: customerId or agentId + sessionId)
+    -> rate-limit middleware (in-memory, keyed by source IP)
+    -> load conversation history (in-memory, keyed by identity: customerId or agentId + sessionId)
     -> Anthropic Messages API call
          system prompt  <- src/prompts/system-prompt.md
          mcp_servers    -> this app's own Managed MCP Server (fresh OAuth token per call, see below)
-    -> save updated history back to Redis
+    -> save updated history back to the in-memory store
     -> Langfuse trace/generation for the whole turn
   <- { "reply": "..." }
 ```
@@ -73,16 +73,20 @@ own short-lived access token at runtime (`src/clients/mcp-auth.client.js`).
 See `connect.yaml` for the full list. Per-app secrets (`MCP_SERVER_URL`,
 `MCP_CLIENT_ID/SECRET/SCOPE`, `INBOUND_API_TOKEN`) are separate per app since
 each agent talks to its own, differently-scoped Managed MCP Server. Shared
-secrets (`ANTHROPIC_API_KEY`, Langfuse keys, Upstash Redis credentials) are
-declared once via `inheritAs`.
+secrets (`ANTHROPIC_API_KEY`, Langfuse keys) are declared once via
+`inheritAs`.
 
 ## Known limitations / follow-ups
 
-- **Redis (Upstash) not yet provisioned for this deployment** — both apps
-  require `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` and will fail
-  their `postDeploy` dependency check without them. Create a free database at
-  the Upstash console, REST API (not the TCP/Redis-protocol endpoint), and
-  drop the two values into each app's config before deploying.
+- **State (rate limits, conversation context) is in-memory, not Redis.** This
+  is a deliberate simplification for a single-instance prototype — it proves
+  the agent pattern works without standing up an external dependency. Real
+  costs: state resets on every restart/redeploy, and it will not work
+  correctly if this app is ever scaled to more than one instance (each
+  instance would rate-limit and hold conversation context independently).
+  Swap `src/clients/memory-store.client.js` for a real Redis/Upstash-backed
+  client (see git history for the original implementation) before that
+  matters.
 - **`X-Forwarded-For` as the client-IP source is unverified against a live
   Connect deployment** (`src/middlewares/rate-limit.middleware.js`) — correct
   for most reverse-proxy setups, but re-confirm against the first real
@@ -90,14 +94,15 @@ declared once via `inheritAs`.
   independently documented for this.
 - **No frontend yet for either agent.** Test with `scripts/smoke-test.sh`
   (or plain `curl`/Postman) against the deployed service URL — see below.
-- **Fail-open vs fail-closed:** the rate limiter fails **open** (a Redis
-  hiccup doesn't block real traffic) — everything else (auth, conversation
-  context, the Anthropic/MCP call itself) fails **closed** (a dependency
-  outage surfaces as a 5xx to the caller rather than silently degrading).
+- **Fail-open vs fail-closed:** the rate limiter fails **open** (an
+  unexpected error there doesn't block real traffic) — everything else
+  (auth, conversation context, the Anthropic/MCP call itself) fails
+  **closed** (a dependency outage surfaces as a 5xx to the caller rather
+  than silently degrading).
 - **Test coverage is minimal by design for this prototype phase** — env
-  validation and inbound-auth middleware are covered; the Anthropic/MCP call
-  path, Redis interactions, and Langfuse tracing are not yet unit-tested
-  (would need mocking the Anthropic SDK, Upstash client, and Langfuse client).
+  validation, inbound-auth middleware, and the cart-ownership authorization
+  check are covered; the Anthropic/MCP call path and Langfuse tracing are not
+  yet unit-tested (would need mocking the Anthropic SDK and Langfuse client).
 
 ## Local development
 
@@ -130,13 +135,11 @@ without requiring auth or touching any dependency (liveness only).
 
 ## Deploying
 
-Standard commercetools Connect flow (private GitHub repo → connector draft →
-preview deployment):
+Code lives at `github.com/kapilbathija-ct/kmb-cc-agents` (private). Standard
+commercetools Connect flow from here (see prior connector deployments in
+this project for the exact POST bodies):
 
 ```bash
-gh repo create kmb-cc-agents --private --source=. --push
-# then, via the commercetools API (see managed-mcp-server-setup / prior
-# connector deployments in this project for the exact POST bodies):
 #   POST /connectors/drafts
 #   POST .../updatePreviewable
 #   POST /deployments  (type: "preview")

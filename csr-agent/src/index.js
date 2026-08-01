@@ -7,7 +7,7 @@ import chatRouter from './routes/chat.route.js';
 import { errorMiddleware } from './middlewares/error.middleware.js';
 import { logger } from './utils/logger.utils.js';
 
-const PORT = 8080;
+const PORT = process.env.PORT || 8080;
 
 const app = express();
 

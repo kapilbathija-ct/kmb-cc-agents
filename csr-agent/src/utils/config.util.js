@@ -13,8 +13,6 @@ function readConfiguration() {
     mcpScope: process.env.MCP_SCOPE,
     ctpAuthUrl: process.env.CTP_AUTH_URL,
     inboundApiToken: process.env.INBOUND_API_TOKEN,
-    upstashRedisRestUrl: process.env.UPSTASH_REDIS_REST_URL,
-    upstashRedisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN,
     langfuseSecretKey: process.env.LANGFUSE_SECRET_KEY,
     langfusePublicKey: process.env.LANGFUSE_PUBLIC_KEY,
     langfuseBaseUrl: process.env.LANGFUSE_BASE_URL,

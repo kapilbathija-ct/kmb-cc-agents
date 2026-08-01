@@ -37,8 +37,8 @@ export const rateLimitMiddleware = async (request, response, next) => {
 
     return next();
   } catch (error) {
-    // Fail open on rate-limiter infra errors rather than blocking real
-    // traffic because Redis had a bad moment - logged for visibility.
+    // Fail open on rate-limiter errors rather than blocking real traffic -
+    // logged for visibility.
     logger.error(error);
     return next();
   }

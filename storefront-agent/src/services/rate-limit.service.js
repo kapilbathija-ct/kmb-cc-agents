@@ -1,4 +1,4 @@
-import { getRedisClient } from '../clients/redis.client.js';
+import { memoryIncr, memoryTtlSeconds } from '../clients/memory-store.client.js';
 import configUtils from '../utils/config.util.js';
 
 const KEY_PREFIX = 'storefront-agent:ratelimit';
@@ -10,15 +10,11 @@ const KEY_PREFIX = 'storefront-agent:ratelimit';
  */
 export async function checkRateLimit(ip) {
   const config = configUtils.readConfiguration();
-  const redis = getRedisClient();
   const key = `${KEY_PREFIX}:${ip}`;
 
-  const count = await redis.incr(key);
-  if (count === 1) {
-    await redis.expire(key, config.rateLimitWindowSeconds);
-  }
+  const count = memoryIncr(key, config.rateLimitWindowSeconds);
+  const ttl = memoryTtlSeconds(key);
 
-  const ttl = await redis.ttl(key);
   return {
     allowed: count <= config.rateLimitMaxRequests,
     remaining: Math.max(0, config.rateLimitMaxRequests - count),

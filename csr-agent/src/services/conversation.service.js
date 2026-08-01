@@ -1,4 +1,4 @@
-import { getRedisClient } from '../clients/redis.client.js';
+import { memoryGet, memorySet } from '../clients/memory-store.client.js';
 import configUtils from '../utils/config.util.js';
 
 const KEY_PREFIX = 'csr-agent:context';
@@ -12,15 +12,11 @@ function buildKey(agentId, sessionId) {
 }
 
 export async function getConversationHistory(agentId, sessionId) {
-  const redis = getRedisClient();
-  const history = await redis.get(buildKey(agentId, sessionId));
+  const history = memoryGet(buildKey(agentId, sessionId));
   return Array.isArray(history) ? history : [];
 }
 
 export async function saveConversationHistory(agentId, sessionId, messages) {
   const config = configUtils.readConfiguration();
-  const redis = getRedisClient();
-  await redis.set(buildKey(agentId, sessionId), messages, {
-    ex: config.contextTtlSeconds,
-  });
+  memorySet(buildKey(agentId, sessionId), messages, config.contextTtlSeconds);
 }

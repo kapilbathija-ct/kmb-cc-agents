@@ -8,7 +8,7 @@ inheritAs:
       - key: ANTHROPIC_MODEL
         description: "Anthropic model id used for agent responses, e.g. claude-sonnet-5"
       - key: CONTEXT_TTL_SECONDS
-        description: "How long a conversation's context is retained in Redis after the last message, in seconds (default 1800)"
+        description: "How long a conversation's in-memory context is retained after the last message, in seconds (default 1800)"
       - key: RATE_LIMIT_MAX_REQUESTS
         description: "Max requests allowed per source IP per rate-limit window (default 20)"
       - key: RATE_LIMIT_WINDOW_SECONDS
@@ -22,10 +22,6 @@ inheritAs:
         description: Langfuse public key for observability tracing
       - key: LANGFUSE_BASE_URL
         description: Langfuse host URL (Cloud or self-hosted)
-      - key: UPSTASH_REDIS_REST_URL
-        description: Upstash Redis REST URL - used for per-IP rate limiting and per-identity conversation context
-      - key: UPSTASH_REDIS_REST_TOKEN
-        description: Upstash Redis REST token
 deployAs:
   - name: storefront-agent
     applicationType: service

@@ -1,18 +1,6 @@
-import { getRedisClient } from '../clients/redis.client.js';
 import { getMcpAccessToken } from '../clients/mcp-auth.client.js';
 import { getAnthropicClient } from '../clients/anthropic.client.js';
 import configUtils from '../utils/config.util.js';
-
-const HEALTH_CHECK_KEY = 'storefront-agent:post-deploy-check';
-
-async function checkRedis() {
-  const redis = getRedisClient();
-  await redis.set(HEALTH_CHECK_KEY, 'ok', { ex: 30 });
-  const value = await redis.get(HEALTH_CHECK_KEY);
-  if (value !== 'ok') {
-    throw new Error('Redis health check failed: unexpected read-back value.');
-  }
-}
 
 async function checkMcpAuth() {
   const token = await getMcpAccessToken();
@@ -32,9 +20,6 @@ async function checkAnthropic() {
 }
 
 async function postDeploy() {
-  await checkRedis();
-  process.stdout.write('Redis connectivity: OK\n');
-
   await checkMcpAuth();
   process.stdout.write('MCP OAuth token fetch: OK\n');
 

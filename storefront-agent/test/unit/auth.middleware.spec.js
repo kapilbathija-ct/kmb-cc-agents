@@ -8,8 +8,6 @@ const REQUIRED_ENV = {
   MCP_SCOPE: 'mcp:test:test-server',
   CTP_AUTH_URL: 'https://auth.us-central1.gcp.commercetools.com',
   INBOUND_API_TOKEN: 'a-strong-shared-secret-token',
-  UPSTASH_REDIS_REST_URL: 'https://example.upstash.io',
-  UPSTASH_REDIS_REST_TOKEN: 'test-upstash-token',
 };
 
 describe('verifyInboundAuth', () => {

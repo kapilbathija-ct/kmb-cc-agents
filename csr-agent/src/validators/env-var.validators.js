@@ -79,22 +79,6 @@ const envValidators = [
     { min: 16, max: 128 }
   ),
 
-  standardUrl(['upstashRedisRestUrl'], {
-    code: 'InvalidUpstashRedisRestUrl',
-    message: 'UPSTASH_REDIS_REST_URL should be a valid Upstash REST URL.',
-    referencedBy: 'environmentVariables',
-  }),
-
-  standardString(
-    ['upstashRedisRestToken'],
-    {
-      code: 'InvalidUpstashRedisRestToken',
-      message: 'UPSTASH_REDIS_REST_TOKEN should be a valid Upstash REST token.',
-      referencedBy: 'environmentVariables',
-    },
-    { min: 10, max: 200 }
-  ),
-
   optional(standardString)(
     ['langfuseSecretKey'],
     {
