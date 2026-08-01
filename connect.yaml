@@ -1,0 +1,67 @@
+inheritAs:
+  configuration:
+    standardConfiguration:
+      - key: CTP_PROJECT_KEY
+        description: commercetools composable commerce project key
+      - key: CTP_AUTH_URL
+        description: commercetools OAuth token endpoint for this project's region (e.g. https://auth.us-central1.gcp.commercetools.com)
+      - key: ANTHROPIC_MODEL
+        description: "Anthropic model id used for agent responses, e.g. claude-sonnet-5"
+      - key: CONTEXT_TTL_SECONDS
+        description: "How long a conversation's context is retained in Redis after the last message, in seconds (default 1800)"
+      - key: RATE_LIMIT_MAX_REQUESTS
+        description: "Max requests allowed per source IP per rate-limit window (default 20)"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        description: "Rate-limit window length in seconds (default 60)"
+    securedConfiguration:
+      - key: ANTHROPIC_API_KEY
+        description: Anthropic API key - used to interpret natural language and invoke commercetools Managed MCP Server tools via Anthropic's native remote-MCP connector
+      - key: LANGFUSE_SECRET_KEY
+        description: Langfuse secret key for observability tracing
+      - key: LANGFUSE_PUBLIC_KEY
+        description: Langfuse public key for observability tracing
+      - key: LANGFUSE_BASE_URL
+        description: Langfuse host URL (Cloud or self-hosted)
+      - key: UPSTASH_REDIS_REST_URL
+        description: Upstash Redis REST URL - used for per-IP rate limiting and per-identity conversation context
+      - key: UPSTASH_REDIS_REST_TOKEN
+        description: Upstash Redis REST token
+deployAs:
+  - name: storefront-agent
+    applicationType: service
+    endpoint: /storefrontAgent
+    scripts:
+      postDeploy: npm install && npm run connector:post-deploy
+      preUndeploy: npm install && npm run connector:pre-undeploy
+    configuration:
+      standardConfiguration:
+        - key: MCP_SERVER_URL
+          description: "Managed MCP Server URL for the conversational-commerce (storefront) agent - product discovery + create_carts/update_carts only, no order creation"
+      securedConfiguration:
+        - key: MCP_CLIENT_ID
+          description: "API Client id scoped to mcp:{projectKey}:kmb-cc-storefront-agent"
+        - key: MCP_CLIENT_SECRET
+          description: API Client secret for the above
+        - key: MCP_SCOPE
+          description: OAuth scope string for the above API Client
+        - key: INBOUND_API_TOKEN
+          description: Shared secret the storefront's post-login BFF must present (Authorization Bearer) to call this service - never exposed to the browser
+  - name: csr-agent
+    applicationType: service
+    endpoint: /csrAgent
+    scripts:
+      postDeploy: npm install && npm run connector:post-deploy
+      preUndeploy: npm install && npm run connector:pre-undeploy
+    configuration:
+      standardConfiguration:
+        - key: MCP_SERVER_URL
+          description: "Managed MCP Server URL for the CSR agent - order/customer/payment lookups plus the separate-return-order pattern for returns and cancellations (Order Edits deliberately not used)"
+      securedConfiguration:
+        - key: MCP_CLIENT_ID
+          description: "API Client id scoped to mcp:{projectKey}:kmb-cc-csr-agent"
+        - key: MCP_CLIENT_SECRET
+          description: API Client secret for the above
+        - key: MCP_SCOPE
+          description: OAuth scope string for the above API Client
+        - key: INBOUND_API_TOKEN
+          description: Shared secret the Merchant Center custom app/view's backend must present (Authorization Bearer) to call this service
