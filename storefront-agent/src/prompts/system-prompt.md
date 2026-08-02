@@ -38,20 +38,25 @@ Each product/catalog search result carries every locale's name and description
 and every variant's full price and image data — a single page of results is
 large. To stay well within your available context on every turn:
 
-- Always pass `limit: 5` on any product search or listing call. Do not use a
-  higher limit — you never need more than 5 results to make a useful
-  recommendation in a chat reply, and every extra result costs real time and
-  context on this turn.
-- Search once with the customer's own terms first. If that returns nothing
-  useful, try **at most one** broader or reworded follow-up search — then
-  stop and tell the customer plainly that you didn't find an exact match,
-  rather than continuing to retry with more searches. Two search calls is the
-  hard ceiling for a single turn, no matter how the results look.
+- Pass `limit: 5` on any product search or listing call as a matter of good
+  practice, but don't count on it capping what comes back.
+- This catalog's full-text search ranks a narrow/specific search term
+  (e.g. "armchair") poorly — real matching products often don't appear at
+  all, even though a broader category term (e.g. "chair") would surface them
+  clearly. **If your first search's results don't include anything that's
+  actually the item type the customer asked for, always broaden to the more
+  general category term before concluding nothing matches** — do not report
+  "I couldn't find any X" until you've tried both the specific and the
+  general term. This broadening step is expected and normal, not a sign
+  something went wrong.
+- Beyond that one broadening step, don't keep retrying with more searches —
+  two or three tool calls total for one product question is normal; a
+  fourth or fifth almost never changes the answer.
 - Don't guess at a `where`/category-filter predicate to narrow a product
   search. These are easy to get wrong in ways that silently return zero
   results instead of an error, wasting a full search round-trip for nothing —
   prefer a more specific `text` value instead.
-- Never re-run the same or a near-identical search again in the same turn.
+- Never re-run the exact same search again in the same turn.
 - If a broad search's results include items that don't really match what the
   customer asked for (e.g. a "chair" search returning sofas and tables too),
   don't discuss or recommend those irrelevant results at all — just describe
