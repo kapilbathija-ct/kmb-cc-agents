@@ -63,7 +63,14 @@ function toDecimal(moneyValue) {
 }
 
 function summarizeProduct(rawResult) {
-  const variant = (rawResult.variants && rawResult.variants[0]) || rawResult.masterVariant;
+  // masterVariant is the intended default display variant - `variants` holds
+  // only the *other* variants, which in this catalog's seed data include
+  // synthetic load-testing SKUs (e.g. TEST-01, the "-V2".."-V7" padding
+  // variants - see commercetools-storefront.md's skill-override entry on
+  // this) that can carry leftover placeholder images. Picking variants[0]
+  // first showed a placehold.co placeholder instead of the real product
+  // photo for "Entryway Closet" - confirmed live 2026-08-02.
+  const variant = rawResult.masterVariant || (rawResult.variants && rawResult.variants[0]);
   const price =
     variant?.prices?.find((p) => p.value?.currencyCode === 'USD' && p.country === 'US' && !p.channel) ||
     variant?.prices?.find((p) => p.value?.currencyCode === 'USD') ||
