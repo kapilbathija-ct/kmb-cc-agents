@@ -229,6 +229,32 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
     return { replyText, updatedHistory, products };
   } catch (error) {
     generation.end({ level: 'ERROR', statusMessage: error.message });
+
+    // Defense in depth alongside the system prompt's tool-usage constraints
+    // and compactContentForHistory above: even with both, a single turn can
+    // still overflow Anthropic's 1M-token limit if the model chains several
+    // broad product searches before replying (confirmed live 2026-08-02 -
+    // this specific 400 recurred at 1.3M tokens on a *fresh* session with no
+    // prior history, so it's a within-turn accumulation, not something
+    // history compaction alone can catch). Degrade to an honest, on-brand
+    // message instead of the generic 500 the controller would otherwise send.
+    const isPromptTooLong = error?.status === 400 && /prompt is too long/i.test(error?.message ?? '');
+    if (isPromptTooLong) {
+      logger.error('storefront-agent: prompt-too-long from Anthropic (tool-result accumulation within one turn)', {
+        identityId,
+        sessionId,
+        message: error.message,
+      });
+      trace.update({ output: `error: ${error.message}` });
+      await langfuse.flushAsync();
+      return {
+        replyText:
+          "That search pulled in more than I can process at once — could you narrow it down (a more specific product name or category)?",
+        updatedHistory: history,
+        products: [],
+      };
+    }
+
     trace.update({ output: `error: ${error.message}` });
     await langfuse.flushAsync();
     logger.error(error);
