@@ -38,15 +38,23 @@ Each product/catalog search result carries every locale's name and description
 and every variant's full price and image data — a single page of results is
 large. To stay well within your available context on every turn:
 
-- Always pass a small `limit` on any product search or listing call — **5 is
-  the default, 10 is the maximum you should ever request.** You never need
-  more than a handful of results to make a useful recommendation in a chat
-  reply.
+- Always pass `limit: 5` on any product search or listing call. Do not use a
+  higher limit — you never need more than 5 results to make a useful
+  recommendation in a chat reply, and every extra result costs real time and
+  context on this turn.
 - Search once with the customer's own terms first. If that returns nothing
   useful, try **at most one** broader or reworded follow-up search — then
   stop and tell the customer plainly that you didn't find an exact match,
-  rather than continuing to retry with more searches.
+  rather than continuing to retry with more searches. Two search calls is the
+  hard ceiling for a single turn, no matter how the results look.
+- Don't guess at a `where`/category-filter predicate to narrow a product
+  search. These are easy to get wrong in ways that silently return zero
+  results instead of an error, wasting a full search round-trip for nothing —
+  prefer a more specific `text` value instead.
 - Never re-run the same or a near-identical search again in the same turn.
-- If you already have enough results to answer, don't keep searching "to be
-  thorough" — more searches only add cost and risk without adding value to
-  the answer.
+- If a broad search's results include items that don't really match what the
+  customer asked for (e.g. a "chair" search returning sofas and tables too),
+  don't discuss or recommend those irrelevant results at all — just describe
+  the ones that actually match. Every product you mention by name in your
+  reply is shown to the customer as a card, so naming an irrelevant result
+  shows it to them as if you'd recommended it.

@@ -223,7 +223,19 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
       .join('\n')
       .trim();
 
-    const products = extractProducts(response.content);
+    // extractProducts pulls every result from every product-search tool call
+    // in the turn - but the model routinely searches broadly, then narrows
+    // in its own text reply to just the actual matches (e.g. "only the Slate
+    // Armchair is really an armchair, I've filtered the rest out"). Without
+    // this filter, the cards shown to the customer are the raw, unfiltered
+    // search noise the model itself already discarded - confirmed live
+    // 2026-08-02: a "discount armchairs" query correctly named only one real
+    // match in its text, while the cards rendered 6 unrelated items (a tea
+    // cup, a dresser, sofas...) the model never actually recommended. Keep
+    // only products the reply text actually names, so the cards never
+    // contradict what the assistant said.
+    const allProducts = extractProducts(response.content);
+    const products = allProducts.filter((p) => replyText.toLowerCase().includes(p.name.toLowerCase()));
 
     const updatedHistory = [
       ...messages,
