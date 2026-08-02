@@ -14,6 +14,22 @@
 # ConnectorStaged -> updatePreviewable -> preview-deployment way as TaxJar,
 # just without the API-client-provisioning step first.
 #
+# IMPORTANT — a Deployment's connector.id is the only source of truth for
+# which ConnectorStaged actually backs it, NOT a fresh key-based lookup.
+# Confirmed live 2026-08-02: an interrupted prior session's ConnectorStaged
+# lost its `key` (went to null - a duplicate later got created under the
+# same key text by a fresh `POST /connectors/drafts` when the key-based GET
+# 404'd), leaving TWO ConnectorStaged records that shared a key in name only.
+# `redeploy` with `updateConnector: true` also proved unreliable at actually
+# switching a Deployment onto a different tag/connector - the deployment kept
+# serving old code despite reporting "Deployed" and despite the connector it
+# pointed at (by id) being correctly bumped to a new previewable tag. The
+# only combination confirmed to actually work: read `connector.id` off the
+# EXISTING deployment directly, update THAT connector's repository/tag, then
+# DELETE and CREATE a fresh Deployment against it (not `redeploy`). See
+# commercetools-es-workspace's .claude/skill-overrides/commercetools-connect.md
+# for the fuller writeup - this script encodes the fix.
+#
 # Required env vars (source commercetools-es-workspace/.env):
 #   CTP_PROJECT_KEY, CTP_CLIENT_ID, CTP_CLIENT_SECRET, CTP_AUTH_URL
 #   ANTHROPIC_API_KEY
@@ -28,10 +44,17 @@
 #   DEPLOYMENT_KEY (default kmb-cc-agents)
 #   CONNECTOR_REPO_URL / CONNECTOR_REPO_TAG
 #   ANTHROPIC_MODEL (default claude-sonnet-5)
-#   STOREFRONT_INBOUND_API_TOKEN / CSR_INBOUND_API_TOKEN (generated if unset)
+#   STOREFRONT_INBOUND_API_TOKEN / CSR_INBOUND_API_TOKEN (generated if unset -
+#     note these are NOT persisted anywhere durable by this script, only
+#     printed at the end; a redeploy that regenerates them invalidates
+#     whatever caller previously held the old value)
 #
-# Safe to re-run: reuses an existing ConnectorStaged/Deployment by key and
-# redeploys with current config instead of erroring.
+# Safe to re-run: reuses an existing Deployment/ConnectorStaged and only
+# touches what's needed - a config-only re-run (same tag) does a plain
+# redeploy; a tag bump deletes and recreates the Deployment against the
+# freshly-previewable connector, which produces a NEW service URL each time
+# (acceptable for this prototype phase - nothing depends on a fixed hostname
+# yet).
 
 set -euo pipefail
 
@@ -68,80 +91,137 @@ log() { echo "==> $*"; }
 log "Getting a commercetools OAuth token"
 TOKEN=$(curl -s -X POST "$CTP_AUTH_URL/oauth/token" -u "$CTP_CLIENT_ID:$CTP_CLIENT_SECRET" -d "grant_type=client_credentials" | jq -r .access_token)
 
-# --- ConnectorStaged: create or reuse -------------------------------------
-
-log "Checking for an existing ConnectorStaged (key: $CONNECTOR_KEY)"
-HTTP_STATUS=$(curl -s -o /tmp/kmb-cc-agents-connector-staged.json -w "%{http_code}" \
-  "$CONNECT_API_URL/connectors/drafts/key=$CONNECTOR_KEY" -H "Authorization: Bearer $TOKEN")
-
-if [ "$HTTP_STATUS" = "200" ]; then
-  echo "    Found — reusing."
-elif [ "$HTTP_STATUS" = "404" ]; then
-  echo "    Not found — creating."
-  DRAFT=$(jq -n \
-    --arg key "$CONNECTOR_KEY" \
-    --arg repo_url "$CONNECTOR_REPO_URL" \
-    --arg repo_tag "$CONNECTOR_REPO_TAG" \
-    --arg private_project "${CTP_REGION}:${CTP_PROJECT_KEY}" \
-    '{
-      key: $key,
-      name: "KMB Conversational Commerce Agents",
-      description: "Storefront and CSR conversational agents (Anthropic native remote-MCP connector against per-agent Managed MCP Servers) for kmb-core-commerce-lab",
-      creator: {name: "Kapil Bathija", email: "kapil.bathija@commercetools.com", company: "commercetools"},
-      repository: {url: $repo_url, tag: $repo_tag},
-      integrationTypes: ["other"],
-      privateProjects: [$private_project],
-      supportedRegions: ["us-central1.gcp"]
-    }')
-  curl -s -X POST "$CONNECT_API_URL/connectors/drafts" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    -d "$DRAFT" -o /tmp/kmb-cc-agents-connector-staged.json -w "HTTP %{http_code}\n"
-  if jq -e '.statusCode' /tmp/kmb-cc-agents-connector-staged.json >/dev/null 2>&1; then
-    echo "    ERROR creating ConnectorStaged:" >&2
-    cat /tmp/kmb-cc-agents-connector-staged.json >&2
-    exit 1
-  fi
-else
-  echo "    ERROR: unexpected HTTP $HTTP_STATUS checking ConnectorStaged:" >&2
-  cat /tmp/kmb-cc-agents-connector-staged.json >&2
-  exit 1
-fi
-
-IS_PREVIEWABLE=$(jq -r '.isPreviewable // false' /tmp/kmb-cc-agents-connector-staged.json)
-if [ "$IS_PREVIEWABLE" != "true" ]; then
-  log "Requesting previewable status"
-  CONNECTOR_VERSION=$(jq -r '.version' /tmp/kmb-cc-agents-connector-staged.json)
-  curl -s -X POST "$CONNECT_API_URL/connectors/drafts/key=$CONNECTOR_KEY" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    -d "{\"version\": $CONNECTOR_VERSION, \"actions\": [{\"action\": \"updatePreviewable\"}]}" \
-    -o /tmp/kmb-cc-agents-connector-staged.json -w "HTTP %{http_code}\n"
-
+wait_for_previewable() {
+  local connector_id="$1"
   log "Waiting for isPreviewable to become true (validation can take a few minutes)"
   for i in $(seq 1 40); do
-    curl -s "$CONNECT_API_URL/connectors/drafts/key=$CONNECTOR_KEY" \
-      -H "Authorization: Bearer $TOKEN" -o /tmp/kmb-cc-agents-connector-staged.json
-    IS_PREVIEWABLE=$(jq -r '.isPreviewable // false' /tmp/kmb-cc-agents-connector-staged.json)
-    STATUS=$(jq -r '.connectorStatus // .status // "unknown"' /tmp/kmb-cc-agents-connector-staged.json)
-    echo "    [$i] isPreviewable=$IS_PREVIEWABLE status=$STATUS"
-    [ "$IS_PREVIEWABLE" = "true" ] && break
-    if echo "$STATUS" | grep -qi "fail"; then
+    curl -s "$CONNECT_API_URL/connectors/drafts/$connector_id" \
+      -H "Authorization: Bearer $TOKEN" -o /tmp/kmb-cc-agents-connector.json
+    local is_previewable status
+    is_previewable=$(jq -r '.isPreviewable // "none"' /tmp/kmb-cc-agents-connector.json)
+    status=$(jq -r '.status // "unknown"' /tmp/kmb-cc-agents-connector.json)
+    echo "    [$i] isPreviewable=$is_previewable status=$status"
+    [ "$is_previewable" = "true" ] && return 0
+    if echo "$status" | grep -qi "fail"; then
       echo "    ERROR: previewable validation failed:" >&2
-      jq '.publishingReport // .' /tmp/kmb-cc-agents-connector-staged.json >&2
+      jq '.previewableReport // .' /tmp/kmb-cc-agents-connector.json >&2
       exit 1
     fi
     sleep 15
   done
-  if [ "$IS_PREVIEWABLE" != "true" ]; then
-    echo "    ERROR: timed out waiting for isPreviewable" >&2
-    cat /tmp/kmb-cc-agents-connector-staged.json >&2
+  echo "    ERROR: timed out waiting for isPreviewable" >&2
+  cat /tmp/kmb-cc-agents-connector.json >&2
+  exit 1
+}
+
+ensure_connector_on_tag() {
+  local connector_id="$1"
+  curl -s "$CONNECT_API_URL/connectors/drafts/$connector_id" \
+    -H "Authorization: Bearer $TOKEN" -o /tmp/kmb-cc-agents-connector.json
+  local current_tag is_previewable
+  current_tag=$(jq -r '.repository.tag' /tmp/kmb-cc-agents-connector.json)
+  is_previewable=$(jq -r '.isPreviewable // "none"' /tmp/kmb-cc-agents-connector.json)
+
+  if [ "$current_tag" = "$CONNECTOR_REPO_TAG" ] && [ "$is_previewable" = "true" ]; then
+    echo "    Connector $connector_id already on $CONNECTOR_REPO_TAG and previewable."
+    CODE_CHANGED=false
+    return 0
+  fi
+
+  if [ "$current_tag" != "$CONNECTOR_REPO_TAG" ]; then
+    log "Connector $connector_id: repository tag $current_tag -> $CONNECTOR_REPO_TAG"
+    local version
+    version=$(jq -r '.version' /tmp/kmb-cc-agents-connector.json)
+    curl -s -X POST "$CONNECT_API_URL/connectors/drafts/$connector_id" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d "{\"version\": $version, \"actions\": [{\"action\": \"setRepository\", \"url\": \"$CONNECTOR_REPO_URL\", \"tag\": \"$CONNECTOR_REPO_TAG\"}]}" \
+      -o /tmp/kmb-cc-agents-connector.json -w "HTTP %{http_code}\n"
+    if jq -e '.statusCode' /tmp/kmb-cc-agents-connector.json >/dev/null 2>&1; then
+      echo "    ERROR setting new repository tag:" >&2
+      cat /tmp/kmb-cc-agents-connector.json >&2
+      exit 1
+    fi
+    CODE_CHANGED=true
+  else
+    CODE_CHANGED=false
+  fi
+
+  log "Requesting previewable status for $connector_id"
+  local version
+  version=$(jq -r '.version' /tmp/kmb-cc-agents-connector.json)
+  curl -s -X POST "$CONNECT_API_URL/connectors/drafts/$connector_id" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"version\": $version, \"actions\": [{\"action\": \"updatePreviewable\"}]}" \
+    -o /tmp/kmb-cc-agents-connector.json -w "HTTP %{http_code}\n"
+  wait_for_previewable "$connector_id"
+}
+
+# --- Find the connector that actually backs any existing deployment --------
+
+log "Checking for an existing deployment (key: $DEPLOYMENT_KEY)"
+HTTP_STATUS=$(curl -s -o /tmp/kmb-cc-agents-deployment.json -w "%{http_code}" \
+  "$CONNECT_API_URL/$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY" -H "Authorization: Bearer $TOKEN")
+
+CODE_CHANGED=false
+if [ "$HTTP_STATUS" = "200" ]; then
+  CONNECTOR_ID=$(jq -r '.connector.id' /tmp/kmb-cc-agents-deployment.json)
+  echo "    Found — backed by connector $CONNECTOR_ID (the deployment's own connector.id, not a fresh key lookup)."
+  ensure_connector_on_tag "$CONNECTOR_ID"
+elif [ "$HTTP_STATUS" = "404" ]; then
+  echo "    Not found."
+  log "Checking for an existing ConnectorStaged (key: $CONNECTOR_KEY)"
+  HTTP_STATUS=$(curl -s -o /tmp/kmb-cc-agents-connector.json -w "%{http_code}" \
+    "$CONNECT_API_URL/connectors/drafts/key=$CONNECTOR_KEY" -H "Authorization: Bearer $TOKEN")
+
+  if [ "$HTTP_STATUS" = "200" ]; then
+    CONNECTOR_ID=$(jq -r '.id' /tmp/kmb-cc-agents-connector.json)
+    echo "    Found — reusing connector $CONNECTOR_ID."
+    ensure_connector_on_tag "$CONNECTOR_ID"
+  elif [ "$HTTP_STATUS" = "404" ]; then
+    echo "    Not found — creating."
+    DRAFT=$(jq -n \
+      --arg key "$CONNECTOR_KEY" \
+      --arg repo_url "$CONNECTOR_REPO_URL" \
+      --arg repo_tag "$CONNECTOR_REPO_TAG" \
+      --arg private_project "${CTP_REGION}:${CTP_PROJECT_KEY}" \
+      '{
+        key: $key,
+        name: "KMB Conversational Commerce Agents",
+        description: "Storefront and CSR conversational agents (Anthropic native remote-MCP connector against per-agent Managed MCP Servers) for kmb-core-commerce-lab",
+        creator: {name: "Kapil Bathija", email: "kapil.bathija@commercetools.com", company: "commercetools"},
+        repository: {url: $repo_url, tag: $repo_tag},
+        integrationTypes: ["other"],
+        privateProjects: [$private_project],
+        supportedRegions: ["us-central1.gcp"]
+      }')
+    curl -s -X POST "$CONNECT_API_URL/connectors/drafts" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d "$DRAFT" -o /tmp/kmb-cc-agents-connector.json -w "HTTP %{http_code}\n"
+    if jq -e '.statusCode' /tmp/kmb-cc-agents-connector.json >/dev/null 2>&1; then
+      echo "    ERROR creating ConnectorStaged:" >&2
+      cat /tmp/kmb-cc-agents-connector.json >&2
+      exit 1
+    fi
+    CONNECTOR_ID=$(jq -r '.id' /tmp/kmb-cc-agents-connector.json)
+    log "Requesting previewable status for $CONNECTOR_ID"
+    VERSION=$(jq -r '.version' /tmp/kmb-cc-agents-connector.json)
+    curl -s -X POST "$CONNECT_API_URL/connectors/drafts/key=$CONNECTOR_KEY" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+      -d "{\"version\": $VERSION, \"actions\": [{\"action\": \"updatePreviewable\"}]}" \
+      -o /tmp/kmb-cc-agents-connector.json -w "HTTP %{http_code}\n"
+    wait_for_previewable "$CONNECTOR_ID"
+  else
+    echo "    ERROR: unexpected HTTP $HTTP_STATUS checking ConnectorStaged:" >&2
+    cat /tmp/kmb-cc-agents-connector.json >&2
     exit 1
   fi
 else
-  echo "    Already previewable."
+  echo "    ERROR: unexpected HTTP $HTTP_STATUS checking deployment:" >&2
+  cat /tmp/kmb-cc-agents-deployment.json >&2
+  exit 1
 fi
 
-CONNECTOR_ID=$(jq -r '.id' /tmp/kmb-cc-agents-connector-staged.json)
-rm -f /tmp/kmb-cc-agents-connector-staged.json
+rm -f /tmp/kmb-cc-agents-connector.json
 
 # --- global + per-app configuration ----------------------------------------
 
@@ -242,14 +322,29 @@ build_deployment_draft() {
     }'
 }
 
-# --- Deployment: create or redeploy ----------------------------------------
+# --- Deployment: create, plain redeploy, or delete+recreate -----------------
 
 log "Checking for an existing deployment (key: $DEPLOYMENT_KEY)"
 HTTP_STATUS=$(curl -s -o /tmp/kmb-cc-agents-deployment.json -w "%{http_code}" \
   "$CONNECT_API_URL/$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY" -H "Authorization: Bearer $TOKEN")
 
+if [ "$HTTP_STATUS" = "200" ] && [ "$CODE_CHANGED" = "true" ]; then
+  echo "    Found, but the connector's code changed — redeploy alone doesn't reliably pick this up (see header comment). Deleting and recreating instead."
+  curl -s -X DELETE "$CONNECT_API_URL/$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY" \
+    -H "Authorization: Bearer $TOKEN" -o /tmp/kmb-cc-agents-deployment.json -w "HTTP %{http_code}\n"
+  log "Waiting for the old deployment to fully undeploy"
+  for i in $(seq 1 40); do
+    HTTP_STATUS=$(curl -s -o /tmp/kmb-cc-agents-deployment.json -w "%{http_code}" \
+      "$CONNECT_API_URL/$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY" -H "Authorization: Bearer $TOKEN")
+    [ "$HTTP_STATUS" = "404" ] && { echo "    [$i] gone."; break; }
+    echo "    [$i] status: $(jq -r '.status' /tmp/kmb-cc-agents-deployment.json)"
+    sleep 10
+  done
+  HTTP_STATUS=404
+fi
+
 if [ "$HTTP_STATUS" = "200" ]; then
-  echo "    Found — redeploying with current config."
+  echo "    Found — redeploying with current config (no code change)."
   CURRENT_VERSION=$(jq -r '.version' /tmp/kmb-cc-agents-deployment.json)
   DRAFT=$(build_deployment_draft)
   UPDATE=$(jq -n \
@@ -300,6 +395,6 @@ rm -f /tmp/kmb-cc-agents-deployment.json
 unset TOKEN
 
 log "Done."
-log "storefront-agent: ${STOREFRONT_URL}/storefrontAgent  (INBOUND_API_TOKEN: $STOREFRONT_INBOUND_API_TOKEN)"
-log "csr-agent:        ${CSR_URL}/csrAgent  (INBOUND_API_TOKEN: $CSR_INBOUND_API_TOKEN)"
+log "storefront-agent: ${STOREFRONT_URL}/chat  (INBOUND_API_TOKEN: $STOREFRONT_INBOUND_API_TOKEN)"
+log "csr-agent:        ${CSR_URL}/chat  (INBOUND_API_TOKEN: $CSR_INBOUND_API_TOKEN)"
 log "Save these INBOUND_API_TOKEN values — commercetools never returns secured configuration values again after this."
