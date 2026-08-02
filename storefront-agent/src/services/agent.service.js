@@ -120,6 +120,17 @@ function buildToolUseNameById(content) {
   return names;
 }
 
+// Deliberately uncapped - when a turn makes multiple searches (e.g. a broad
+// term first, a narrower one second), the model's reply is usually grounded
+// in the LATER, more specific call. Capping here, before the caller's
+// reply-text filter runs, silently drops those later-found, actually-
+// relevant products whenever an earlier broad call alone already produced
+// MAX_PRODUCTS_RETURNED irrelevant hits - confirmed live 2026-08-02: a
+// "green chairs" reply named Sally Armchair/Glam Armchair/Rattan Lounge
+// Chair, but the capped extraction had already filled up on an earlier
+// call's unrelated results (a sofa, a rug, pillow covers...), so none of the
+// chairs the model was actually describing ever made it into the products
+// array. Cap only the final, name-filtered result - see runAgentTurn.
 function extractProducts(content) {
   const toolUseNameById = buildToolUseNameById(content);
   const seen = new Map();
@@ -130,7 +141,7 @@ function extractProducts(content) {
       if (!seen.has(product.id)) seen.set(product.id, product);
     }
   }
-  return [...seen.values()].slice(0, MAX_PRODUCTS_RETURNED);
+  return [...seen.values()];
 }
 
 function compactContentForHistory(content) {
@@ -235,7 +246,9 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
     // only products the reply text actually names, so the cards never
     // contradict what the assistant said.
     const allProducts = extractProducts(response.content);
-    const products = allProducts.filter((p) => replyText.toLowerCase().includes(p.name.toLowerCase()));
+    const products = allProducts
+      .filter((p) => replyText.toLowerCase().includes(p.name.toLowerCase()))
+      .slice(0, MAX_PRODUCTS_RETURNED);
 
     // Diagnostic for the case this filter can't yet fully explain: search
     // results were extracted, but none of their names matched the reply
