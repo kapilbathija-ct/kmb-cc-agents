@@ -62,7 +62,13 @@ CTP_REGION="${CTP_REGION:-us-central1.gcp}"
 CONNECTOR_KEY="${CONNECTOR_KEY:-kmb-cc-agents}"
 DEPLOYMENT_KEY="${DEPLOYMENT_KEY:-kmb-cc-agents}"
 CONNECTOR_REPO_URL="${CONNECTOR_REPO_URL:-https://github.com/kapilbathija-ct/kmb-cc-agents.git}"
-CONNECTOR_REPO_TAG="${CONNECTOR_REPO_TAG:-v1.0.0}"
+# A hardcoded default here (e.g. "v1.0.0") silently regresses to stale code
+# the moment a newer tag exists and the caller forgets to override it -
+# confirmed live 2026-08-02, this exact default caused an unwanted
+# delete+recreate back to v1.0.0 when v1.0.1 was already deployed. Default to
+# the repo's own latest tag instead, so re-running this script with no
+# override is always a safe no-op/idempotent call.
+CONNECTOR_REPO_TAG="${CONNECTOR_REPO_TAG:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && git describe --tags --abbrev=0)}"
 ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-sonnet-5}"
 CONNECT_API_URL="https://connect.${CTP_REGION}.commercetools.com"
 

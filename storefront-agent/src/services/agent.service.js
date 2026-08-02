@@ -34,6 +34,117 @@ const MCP_SERVER_NAME = 'commercetools';
 // replayed as context on each call.
 const MAX_HISTORY_MESSAGES = 20;
 
+// Product-search tool results come back as raw commercetools JSON - every
+// locale's name/description, every variant's full price/channel matrix, full
+// image dimensions - which runs 500-750KB for a 20-result page. Stored
+// verbatim in conversation history, two such calls in one turn is enough to
+// blow past Anthropic's 1M-token context limit on a later turn (confirmed
+// live 2026-08-02: "prompt is too long: 1184790 tokens > 1000000 maximum" -
+// the exact cause of the storefront's "could not process this message"
+// failure). Compact every mcp_tool_result before it's persisted; only the
+// current turn's response needs full detail (for the product cards below),
+// and even that is reduced to just the fields the UI uses.
+const MAX_STORED_TOOL_RESULT_CHARS = 1500;
+const MAX_PRODUCTS_RETURNED = 6;
+const PRODUCT_SEARCH_TOOL_NAMES = new Set([
+  'read_product_projections',
+  'read_product_search',
+  'search_products',
+]);
+
+function pickLocalized(value) {
+  if (!value || typeof value !== 'object') return typeof value === 'string' ? value : '';
+  return value['en-US'] || value['en-GB'] || Object.values(value)[0] || '';
+}
+
+function toDecimal(moneyValue) {
+  if (!moneyValue || typeof moneyValue.centAmount !== 'number') return null;
+  return moneyValue.centAmount / 10 ** (moneyValue.fractionDigits ?? 2);
+}
+
+function summarizeProduct(rawResult) {
+  const variant = (rawResult.variants && rawResult.variants[0]) || rawResult.masterVariant;
+  const price =
+    variant?.prices?.find((p) => p.value?.currencyCode === 'USD' && p.country === 'US' && !p.channel) ||
+    variant?.prices?.find((p) => p.value?.currencyCode === 'USD') ||
+    variant?.prices?.[0];
+  if (!variant || !price) return null;
+
+  return {
+    id: rawResult.id,
+    sku: variant.sku,
+    name: pickLocalized(rawResult.name),
+    description: pickLocalized(rawResult.description).slice(0, 240),
+    slug: pickLocalized(rawResult.slug) || null,
+    image: variant.images?.[0]?.url || null,
+    currency: price.value.currencyCode,
+    price: toDecimal(price.value),
+    discountedPrice: price.discounted?.value ? toDecimal(price.discounted.value) : null,
+  };
+}
+
+function extractProductsFromToolResultText(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const results = parsed.results || parsed.matches || [];
+  if (!Array.isArray(results)) return [];
+  return results.map(summarizeProduct).filter(Boolean);
+}
+
+function getToolResultText(block) {
+  return (block.content || [])
+    .filter((c) => c.type === 'text')
+    .map((c) => c.text)
+    .join('');
+}
+
+// Maps each mcp_tool_result back to the tool name it answers, so compaction
+// only touches known-huge product-search payloads and leaves other tool
+// results (cart/customer/order reads, already small) untouched.
+function buildToolUseNameById(content) {
+  const names = new Map();
+  for (const block of content) {
+    if (block.type === 'mcp_tool_use') names.set(block.id, block.name);
+  }
+  return names;
+}
+
+function extractProducts(content) {
+  const toolUseNameById = buildToolUseNameById(content);
+  const seen = new Map();
+  for (const block of content) {
+    if (block.type !== 'mcp_tool_result') continue;
+    if (!PRODUCT_SEARCH_TOOL_NAMES.has(toolUseNameById.get(block.tool_use_id))) continue;
+    for (const product of extractProductsFromToolResultText(getToolResultText(block))) {
+      if (!seen.has(product.id)) seen.set(product.id, product);
+    }
+  }
+  return [...seen.values()].slice(0, MAX_PRODUCTS_RETURNED);
+}
+
+function compactContentForHistory(content) {
+  const toolUseNameById = buildToolUseNameById(content);
+  return content.map((block) => {
+    if (block.type !== 'mcp_tool_result') return block;
+    const text = getToolResultText(block);
+    if (text.length <= MAX_STORED_TOOL_RESULT_CHARS) return block;
+
+    const isProductSearch = PRODUCT_SEARCH_TOOL_NAMES.has(toolUseNameById.get(block.tool_use_id));
+    const compactText = isProductSearch
+      ? JSON.stringify({
+          note: 'Full result already summarized for the user; only a compact excerpt is kept in history to control context size.',
+          products: extractProductsFromToolResultText(text),
+        })
+      : `${text.slice(0, MAX_STORED_TOOL_RESULT_CHARS)}...[truncated for context size]`;
+
+    return { ...block, content: [{ type: 'text', text: compactText }] };
+  });
+}
+
 export async function runAgentTurn({ identityId, sessionId, userMessage, history }) {
   const config = configUtils.readConfiguration();
   const anthropic = getAnthropicClient();
@@ -96,7 +207,7 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
 
       // Don't persist this turn's assistant content - keep history at its
       // last known-good state rather than replaying the tainted turn forward.
-      return { replyText: BLOCKED_REPLY_TEXT, updatedHistory: history };
+      return { replyText: BLOCKED_REPLY_TEXT, updatedHistory: history, products: [] };
     }
 
     const replyText = response.content
@@ -105,15 +216,17 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
       .join('\n')
       .trim();
 
+    const products = extractProducts(response.content);
+
     const updatedHistory = [
       ...messages,
-      { role: 'assistant', content: response.content },
+      { role: 'assistant', content: compactContentForHistory(response.content) },
     ];
 
-    trace.update({ output: replyText });
+    trace.update({ output: replyText, metadata: { productsShown: products.length } });
     await langfuse.flushAsync();
 
-    return { replyText, updatedHistory };
+    return { replyText, updatedHistory, products };
   } catch (error) {
     generation.end({ level: 'ERROR', statusMessage: error.message });
     trace.update({ output: `error: ${error.message}` });

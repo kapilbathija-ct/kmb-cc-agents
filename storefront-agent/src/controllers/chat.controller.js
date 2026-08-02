@@ -27,7 +27,7 @@ export const chatHandler = async (request, response) => {
 
   try {
     const history = await getConversationHistory(customerId, sessionId);
-    const { replyText, updatedHistory } = await runAgentTurn({
+    const { replyText, updatedHistory, products } = await runAgentTurn({
       identityId: customerId,
       sessionId,
       userMessage: message,
@@ -36,7 +36,7 @@ export const chatHandler = async (request, response) => {
 
     await saveConversationHistory(customerId, sessionId, updatedHistory);
 
-    return response.status(HTTP_STATUS_OK).send({ reply: replyText });
+    return response.status(HTTP_STATUS_OK).send({ reply: replyText, products });
   } catch (error) {
     logger.error(error);
     return response
