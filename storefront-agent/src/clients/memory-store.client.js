@@ -4,9 +4,34 @@
 // instances if this app is ever scaled horizontally - swap this module for
 // a real Redis/Upstash client (see git history) before that matters.
 const store = new Map();
+const SWEEP_INTERVAL_MS = 60_000;
 
 function isExpired(entry) {
   return entry.expiresAt !== null && Date.now() > entry.expiresAt;
+}
+
+// memoryGet/memoryIncr only delete an expired entry when that exact key is
+// accessed again - a key written once and never revisited (a one-off
+// session, a rate-limit key from an IP that never returns) would otherwise
+// stay resident in this Map for the life of the process. Sweep periodically
+// so abandoned entries actually get reclaimed.
+export function sweepExpiredEntries() {
+  for (const [key, entry] of store) {
+    if (isExpired(entry)) {
+      store.delete(key);
+    }
+  }
+}
+
+const sweepTimer = setInterval(sweepExpiredEntries, SWEEP_INTERVAL_MS);
+sweepTimer.unref();
+
+// Test-only: the Map itself is intentionally not exported, so this is the
+// only way a spec can prove an entry was actually removed rather than just
+// reported as a miss on next access (both look identical from memoryGet's
+// return value alone).
+export function _sizeForTest() {
+  return store.size;
 }
 
 export function memoryGet(key) {

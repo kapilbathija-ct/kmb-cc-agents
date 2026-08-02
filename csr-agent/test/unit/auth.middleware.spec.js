@@ -62,4 +62,25 @@ describe('verifyInboundAuth', () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
   });
+
+  it('rejects a token of a different length without throwing (timingSafeEqual requires equal-length buffers)', () => {
+    const req = { headers: { authorization: 'Bearer short' } };
+    const res = mockResponse();
+    const next = jest.fn();
+
+    expect(() => verifyInboundAuth(req, res, next)).not.toThrow();
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('includes a human-readable message in the JSON response body (regression: CustomError.message must survive JSON.stringify)', () => {
+    const req = { headers: {} };
+    const res = mockResponse();
+    const next = jest.fn();
+
+    verifyInboundAuth(req, res, next);
+
+    const sentBody = res.send.mock.calls[0][0];
+    expect(JSON.parse(JSON.stringify(sentBody)).message).toMatch(/Unauthorized/);
+  });
 });
