@@ -237,12 +237,29 @@ export async function runAgentTurn({ identityId, sessionId, userMessage, history
     const allProducts = extractProducts(response.content);
     const products = allProducts.filter((p) => replyText.toLowerCase().includes(p.name.toLowerCase()));
 
+    // Diagnostic for the case this filter can't yet fully explain: search
+    // results were extracted, but none of their names matched the reply
+    // text, even though the reply reads as if it named specific products.
+    // Logged to Connect's own deployment logs (queryable in full, unlike
+    // Langfuse's truncated observation output) rather than left silent, so a
+    // recurrence is diagnosable without a special one-off probe script.
+    if (allProducts.length > 0 && products.length === 0) {
+      logger.warn('storefront-agent: extracted products found but none matched reply text', {
+        sessionId,
+        allProductNames: allProducts.map((p) => p.name),
+        replyText,
+      });
+    }
+
     const updatedHistory = [
       ...messages,
       { role: 'assistant', content: compactContentForHistory(response.content) },
     ];
 
-    trace.update({ output: replyText, metadata: { productsShown: products.length } });
+    trace.update({
+      output: replyText,
+      metadata: { productsShown: products.length, productsFound: allProducts.length },
+    });
     await langfuse.flushAsync();
 
     return { replyText, updatedHistory, products };
