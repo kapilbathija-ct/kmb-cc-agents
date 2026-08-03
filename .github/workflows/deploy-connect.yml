@@ -1,0 +1,55 @@
+name: Deploy to Connect
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version segment to bump'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next tag
+        id: tag
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          latest=${latest:-v0.0.0}
+          IFS='.' read -r major minor patch <<< "${latest#v}"
+          bump="${{ github.event.inputs.version_bump || 'patch' }}"
+          case "$bump" in
+            major) major=$((major+1)); minor=0; patch=0 ;;
+            minor) minor=$((minor+1)); patch=0 ;;
+            *)     patch=$((patch+1)) ;;
+          esac
+          next="v${major}.${minor}.${patch}"
+          echo "Bumping $latest -> $next ($bump)"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          git tag "${{ steps.tag.outputs.tag }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
+
+      - name: Roll out through Connect
+        env:
+          CTP_PROJECT_KEY: ${{ secrets.CTP_PROJECT_KEY }}
+          CTP_AUTH_URL: ${{ secrets.CTP_AUTH_URL }}
+          CTP_CLIENT_ID: ${{ secrets.CTP_CLIENT_ID }}
+          CTP_CLIENT_SECRET: ${{ secrets.CTP_CLIENT_SECRET }}
+        run: |
+          ./scripts/deploy-connect.sh \
+            "${{ secrets.CONNECT_REGION_BASE_URL }}" \
+            "${{ secrets.CONNECTOR_KEY }}" \
+            "${{ secrets.DEPLOYMENT_KEY }}" \
+            "${{ steps.tag.outputs.tag }}"
