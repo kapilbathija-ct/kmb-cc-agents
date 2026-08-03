@@ -12,7 +12,7 @@ import { runAgentTurn } from '../services/agent.service.js';
 import { logger } from '../utils/logger.utils.js';
 
 export const chatHandler = async (request, response) => {
-  const { customerId, sessionId, message } = request.body || {};
+  const { customerId, identityType, sessionId, message } = request.body || {};
 
   if (!customerId || !sessionId || !message) {
     return response
@@ -29,6 +29,13 @@ export const chatHandler = async (request, response) => {
     const history = await getConversationHistory(customerId, sessionId);
     const { replyText, updatedHistory, products } = await runAgentTurn({
       identityId: customerId,
+      // Defaults to 'anonymous' rather than 'customer' if the caller omits
+      // it - the safer failure mode, since telling the model to set
+      // anonymousId on a cart it shouldn't (worst case: an extra unlinked
+      // guest cart) is far less harmful than telling it to set customerId
+      // against a UUID that isn't actually a registered Customer (which
+      // commercetools would just reject, but confusingly).
+      identityType: identityType === 'customer' ? 'customer' : 'anonymous',
       sessionId,
       userMessage: message,
       history,

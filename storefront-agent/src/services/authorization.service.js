@@ -36,6 +36,23 @@ function extractCustomerId(obj) {
   return obj.customerId ?? obj.cart?.customerId ?? obj.body?.customerId;
 }
 
+// This storefront runs guest chat by design (see the "guest chat is fine
+// for now" decision) - the overwhelming majority of carts created here are
+// anonymous, keyed by anonymousId, not customerId. A commercetools Cart
+// created for an anonymous identity legitimately has no customerId at all
+// (it's a real Customer-resource reference, not applicable to a guest), so
+// checking only customerId made every single guest add-to-cart look like an
+// "unverifiable-result" and get blocked - confirmed live 2026-08-03, a
+// guest saying "yes" to add an item to their own cart was rejected with
+// the generic "something went wrong" fallback. identityId itself is either
+// a real customerId (signed in) or an anonymous UUID (guest, see
+// app/api/chat/route.ts's ANON_COOKIE) - check whichever field the result
+// actually carries.
+function extractAnonymousId(obj) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  return obj.anonymousId ?? obj.cart?.anonymousId ?? obj.body?.anonymousId;
+}
+
 /**
  * Scans a completed Anthropic response for cart-write tool calls and
  * confirms each one actually landed on the authenticated customer's own
@@ -71,8 +88,9 @@ export function findUnauthorizedCartWrites(contentBlocks, identityId) {
     );
     const result = extractResultObject(resultBlock);
     const outputCustomerId = extractCustomerId(result);
+    const outputAnonymousId = extractAnonymousId(result);
 
-    if (!outputCustomerId) {
+    if (!outputCustomerId && !outputAnonymousId) {
       violations.push({
         toolUseId: toolUse.id,
         tool: toolUse.name,
@@ -81,12 +99,14 @@ export function findUnauthorizedCartWrites(contentBlocks, identityId) {
       continue;
     }
 
-    if (outputCustomerId !== identityId) {
+    const ownedByIdentity = outputCustomerId === identityId || outputAnonymousId === identityId;
+    if (!ownedByIdentity) {
       violations.push({
         toolUseId: toolUse.id,
         tool: toolUse.name,
         reason: 'customer-mismatch',
         outputCustomerId,
+        outputAnonymousId,
       });
     }
   }
