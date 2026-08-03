@@ -4,3 +4,7 @@ node_modules/
 coverage/
 *.log
 .DS_Store
+
+# Local scratch state from `connect` CLI commands (build/scan artifacts,
+# preview build config) - not source, regenerated on every local run.
+.connect/
