@@ -32,6 +32,21 @@ api() {
   curl -sf "https://$CONNECT_BASE_URL/$1" -H "Authorization: Bearer $TOKEN" "${@:2}"
 }
 
+# Used only inside the poll loops below - a one-off transient error (reset
+# connection, momentary 5xx) shouldn't abort a multi-minute rollout that's
+# otherwise on track. Called as `if ! out=$(poll ...); then continue; fi`,
+# which is exempt from `set -e` (a command tested by `if` never triggers
+# errexit), unlike a bare `draft=$(api ...)` would be. Confirmed live
+# 2026-08-03 (run 30820025143): curl's own exit 22 under `set -e` killed a
+# rollout mid-poll while isPreviewable was still trending fine - the very
+# next poll would have succeeded.
+poll() {
+  if ! curl -sf "https://$CONNECT_BASE_URL/$1" -H "Authorization: Bearer $TOKEN" "${@:2}"; then
+    echo "  (transient error fetching $1, retrying)" >&2
+    return 1
+  fi
+}
+
 echo "== Reading current ConnectorStaged ($CONNECTOR_KEY) =="
 draft=$(api "connectors/drafts/key=$CONNECTOR_KEY")
 version=$(echo "$draft" | jq -r .version)
@@ -50,9 +65,10 @@ draft=$(api "connectors/drafts/key=$CONNECTOR_KEY" -X POST -H "Content-Type: app
 version=$(echo "$draft" | jq -r .version)
 
 echo "== Waiting for publish to finish =="
+status=""
 for _ in $(seq 1 40); do
   sleep 15
-  draft=$(api "connectors/drafts/key=$CONNECTOR_KEY")
+  if ! draft=$(poll "connectors/drafts/key=$CONNECTOR_KEY"); then continue; fi
   status=$(echo "$draft" | jq -r .status)
   echo "  status=$status"
   [ "$status" != "Processing" ] && break
@@ -67,9 +83,10 @@ draft=$(api "connectors/drafts/key=$CONNECTOR_KEY" -X POST -H "Content-Type: app
   -d "{\"version\":$version,\"actions\":[{\"action\":\"updatePreviewable\"}]}")
 
 echo "== Waiting for previewable verification =="
+previewable=""
 for _ in $(seq 1 40); do
   sleep 15
-  draft=$(api "connectors/drafts/key=$CONNECTOR_KEY")
+  if ! draft=$(poll "connectors/drafts/key=$CONNECTOR_KEY"); then continue; fi
   previewable=$(echo "$draft" | jq -r .isPreviewable)
   echo "  isPreviewable=$previewable"
   [ "$previewable" != "pending" ] && break
@@ -85,9 +102,10 @@ api "$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY" -X POST -H "Content-Type:
   -d "{\"version\":$dversion,\"actions\":[{\"action\":\"redeploy\",\"updateConnector\":true}]}" > /dev/null
 
 echo "== Waiting for redeploy to finish =="
+dstatus=""
 for _ in $(seq 1 40); do
   sleep 15
-  deployment=$(api "$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY")
+  if ! deployment=$(poll "$CTP_PROJECT_KEY/deployments/key=$DEPLOYMENT_KEY"); then continue; fi
   dstatus=$(echo "$deployment" | jq -r .status)
   echo "  status=$dstatus"
   [ "$dstatus" != "Deploying" ] && [ "$dstatus" != "Queued" ] && break
