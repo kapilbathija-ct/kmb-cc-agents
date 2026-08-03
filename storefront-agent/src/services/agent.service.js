@@ -156,6 +156,50 @@ function extractProducts(content) {
   return [...seen.values()];
 }
 
+// extractProducts only sees the CURRENT turn's own tool calls - but a
+// follow-up/confirmation turn (e.g. "yes please", "just the bed then") often
+// doesn't make any new search call at all, since the model is just
+// continuing to discuss items it already found earlier in the conversation.
+// That left such turns with an empty products array even when the reply text
+// names a product by name - confirmed live 2026-08-02 replaying a two-turn
+// "what bed do you recommend" -> "yes please" conversation, where turn 2's
+// reply correctly referenced the previously-recommended bed by name but
+// produced zero cards. compactContentForHistory already preserves exactly
+// this data (product id/name/image/price) in every prior turn's stored
+// mcp_tool_result blocks as {note, products: [...]} - mine it back out so a
+// later turn can still build a card for something named earlier.
+function extractProductsFromHistory(messages) {
+  const seen = new Map();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    const toolUseNameById = buildToolUseNameById(message.content);
+    for (const block of message.content) {
+      if (block.type !== 'mcp_tool_result') continue;
+      const text = getToolResultText(block);
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        continue;
+      }
+      // Compacted (>MAX_STORED_TOOL_RESULT_CHARS) product-search results are
+      // stored as {note, products: [...]} by compactContentForHistory; small
+      // results that never got compacted are still the raw CT response
+      // ({results/matches: [...]}) and need the same summarization current-
+      // turn extraction uses.
+      const products = Array.isArray(parsed?.products)
+        ? parsed.products
+        : PRODUCT_SEARCH_TOOL_NAMES.has(toolUseNameById.get(block.tool_use_id))
+          ? extractProductsFromToolResultText(text)
+          : [];
+      for (const product of products) {
+        if (product?.id) seen.set(product.id, product);
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
 function compactContentForHistory(content) {
   const toolUseNameById = buildToolUseNameById(content);
   return content.map((block) => {
@@ -257,7 +301,16 @@ export async function runAgentTurn({ identityId, identityType, sessionId, userMe
     // cup, a dresser, sofas...) the model never actually recommended. Keep
     // only products the reply text actually names, so the cards never
     // contradict what the assistant said.
-    const allProducts = extractProducts(response.content);
+    // Current turn's fresh tool-call data takes precedence over anything
+    // mined from history for the same product id (history entries are
+    // already-compacted summaries, current-turn ones are freshly derived
+    // from the raw result) - merge with history's entries last so a Map
+    // keyed by id lets the current turn's version win.
+    const currentTurnProducts = extractProducts(response.content);
+    const merged = new Map();
+    for (const product of extractProductsFromHistory(messages)) merged.set(product.id, product);
+    for (const product of currentTurnProducts) merged.set(product.id, product);
+    const allProducts = [...merged.values()];
     const products = allProducts
       .filter((p) => replyText.toLowerCase().includes(p.name.toLowerCase()))
       .slice(0, MAX_PRODUCTS_RETURNED);
