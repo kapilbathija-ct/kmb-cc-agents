@@ -11,6 +11,9 @@ on:
         options: [patch, minor, major]
         default: patch
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
