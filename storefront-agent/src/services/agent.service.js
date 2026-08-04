@@ -11,6 +11,18 @@ import { logger } from '../utils/logger.utils.js';
 const BLOCKED_REPLY_TEXT =
   "Sorry, something went wrong processing that - please try again.";
 
+// langfuse.flushAsync() is a network round-trip to Langfuse's own cloud
+// backend that has no bearing on the reply itself - awaiting it before
+// returning was holding every single response hostage to observability
+// plumbing. Fire-and-forget instead: the trace still gets flushed, just
+// without the customer waiting on it. Confirmed live 2026-08-04 as one of
+// three real contributors to the chat assistant's 8-10s+ response time.
+function flushLangfuseInBackground(langfuse) {
+  langfuse.flushAsync().catch((error) => {
+    logger.error('storefront-agent: Langfuse flush failed (non-blocking)', { message: error.message });
+  });
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_SYSTEM_PROMPT = readFileSync(
   path.resolve(__dirname, '../prompts/system-prompt.md'),
@@ -277,7 +289,7 @@ export async function runAgentTurn({ identityId, identityType, sessionId, userMe
         output: 'blocked: unauthorized cart write detected',
         metadata: { violations },
       });
-      await langfuse.flushAsync();
+      flushLangfuseInBackground(langfuse);
 
       // Don't persist this turn's assistant content - keep history at its
       // last known-good state rather than replaying the tainted turn forward.
@@ -338,7 +350,7 @@ export async function runAgentTurn({ identityId, identityType, sessionId, userMe
       output: replyText,
       metadata: { productsShown: products.length, productsFound: allProducts.length },
     });
-    await langfuse.flushAsync();
+    flushLangfuseInBackground(langfuse);
 
     return { replyText, updatedHistory, products };
   } catch (error) {
@@ -360,7 +372,7 @@ export async function runAgentTurn({ identityId, identityType, sessionId, userMe
         message: error.message,
       });
       trace.update({ output: `error: ${error.message}` });
-      await langfuse.flushAsync();
+      flushLangfuseInBackground(langfuse);
       return {
         replyText:
           "That search pulled in more than I can process at once — could you narrow it down (a more specific product name or category)?",
@@ -370,7 +382,7 @@ export async function runAgentTurn({ identityId, identityType, sessionId, userMe
     }
 
     trace.update({ output: `error: ${error.message}` });
-    await langfuse.flushAsync();
+    flushLangfuseInBackground(langfuse);
     logger.error(error);
     throw error;
   }
