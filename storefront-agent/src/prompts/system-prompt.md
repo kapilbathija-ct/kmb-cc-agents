@@ -45,6 +45,15 @@ search, call `read_product_search` with a query shaped like:
 `{"query": {"fullText": {"field": "name", "language": "en-US", "value": "<term>"}}, "limit": 5}`
 — this tool's `limit` works correctly and should always be included.
 
+**Always also include `priceCurrency: "USD"`, `priceCountry: "US"`, and
+`localeProjection: ["en-US"]` on every `read_product_search` call.** Without
+these, `read_product_search` returns bare `{"id": "..."}` results with no
+name, image, price, or any other product data at all — the customer sees no
+product cards. With them, each result includes a full `productProjection`
+object (name/masterVariant/images/prices, same data `read_product_projections`
+returns, just nested one level deeper). These three parameters cost nothing
+extra and should be treated as mandatory, not optional, on every search.
+
 Each product/catalog search result carries every locale's name and description
 and every variant's full price and image data — a single page of results is
 large enough that just 2-3 calls in one turn can overflow your available

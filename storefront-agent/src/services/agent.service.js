@@ -87,6 +87,20 @@ function toDecimal(moneyValue) {
 }
 
 function summarizeProduct(rawResult) {
+  // read_product_search's own results are ID-only by default - the actual
+  // product data (name/variants/images/prices) only comes back at all when
+  // the call includes the "Product Projection data integration" params
+  // (priceCurrency/localeProjection/etc - see the system prompt's tool
+  // guidance), and even then it's nested one level deeper under
+  // `productProjection`, not flat like read_product_projections' own
+  // results. Confirmed live 2026-08-05: switching product search to
+  // read_product_search (to route around read_product_projections' broken
+  // `limit` parameter - see the mcp-feedback doc) silently zeroed out every
+  // product card in the storefront, because this function was only ever
+  // written for the flat shape. Unwrap both shapes here so card-building
+  // works regardless of which tool actually produced the result.
+  const product = rawResult.productProjection || rawResult;
+
   // masterVariant is the intended default display variant - `variants` holds
   // only the *other* variants, which in this catalog's seed data include
   // synthetic load-testing SKUs (e.g. TEST-01, the "-V2".."-V7" padding
@@ -94,7 +108,7 @@ function summarizeProduct(rawResult) {
   // this) that can carry leftover placeholder images. Picking variants[0]
   // first showed a placehold.co placeholder instead of the real product
   // photo for "Entryway Closet" - confirmed live 2026-08-02.
-  const variant = rawResult.masterVariant || (rawResult.variants && rawResult.variants[0]);
+  const variant = product.masterVariant || (product.variants && product.variants[0]);
   const price =
     variant?.prices?.find((p) => p.value?.currencyCode === 'USD' && p.country === 'US' && !p.channel) ||
     variant?.prices?.find((p) => p.value?.currencyCode === 'USD') ||
@@ -102,11 +116,11 @@ function summarizeProduct(rawResult) {
   if (!variant || !price) return null;
 
   return {
-    id: rawResult.id,
+    id: rawResult.id || product.id,
     sku: variant.sku,
-    name: pickLocalized(rawResult.name),
-    description: pickLocalized(rawResult.description).slice(0, 240),
-    slug: pickLocalized(rawResult.slug) || null,
+    name: pickLocalized(product.name),
+    description: pickLocalized(product.description).slice(0, 240),
+    slug: pickLocalized(product.slug) || null,
     image: variant.images?.[0]?.url || null,
     currency: price.value.currencyCode,
     price: toDecimal(price.value),
