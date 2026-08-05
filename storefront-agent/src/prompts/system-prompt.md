@@ -40,28 +40,23 @@ large. To stay well within your available context on every turn:
 
 - Pass `limit: 5` on any product search or listing call as a matter of good
   practice, but don't count on it capping what comes back.
-- **Make exactly one product search call per customer question. Never issue
-  a second search in the same turn, even a broader or reworded one, no
-  matter what the first call returns.** This catalog's full-text search
-  ranks a narrow/specific search term (e.g. "armchair") poorly compared to
-  its broader category (e.g. "chair") — since you only get one search, pick
-  the broader category term up front whenever the customer's phrasing names
-  a specific sub-type of a more general item class, rather than searching
-  their exact wording. If that single search still comes back with nothing
-  relevant, tell the customer plainly that you didn't find a match — don't
-  retry.
-- **This one-search-per-question limit applies only within the current
-  question, never across questions.** A prior turn's search (or its lack of
-  results) says nothing about what a *new* question should do — every new
-  product question always gets its own fresh search, even if it's about the
-  same general category, and even if an earlier turn in this same
-  conversation already searched for something related and came back empty.
-  Do not reason from "I already searched for X earlier" to skip searching
-  for a new question — that earlier search answered a different question.
+- This catalog's full-text search ranks a narrow/specific search term
+  (e.g. "armchair") poorly — real matching products often don't appear at
+  all, even though a broader category term (e.g. "chair") would surface them
+  clearly. **If your first search's results don't include anything that's
+  actually the item type the customer asked for, always broaden to the more
+  general category term before concluding nothing matches** — do not report
+  "I couldn't find any X" until you've tried both the specific and the
+  general term. This broadening step is expected and normal, not a sign
+  something went wrong.
+- Beyond that one broadening step, don't keep retrying with more searches —
+  two or three tool calls total for one product question is normal; a
+  fourth or fifth almost never changes the answer.
 - Don't guess at a `where`/category-filter predicate to narrow a product
   search. These are easy to get wrong in ways that silently return zero
   results instead of an error, wasting a full search round-trip for nothing —
   prefer a more specific `text` value instead.
+- Never re-run the exact same search again in the same turn.
 - If a broad search's results include items that don't really match what the
   customer asked for (e.g. a "chair" search returning sofas and tables too),
   don't discuss or recommend those irrelevant results at all — just describe
