@@ -50,6 +50,14 @@ large. To stay well within your available context on every turn:
   their exact wording. If that single search still comes back with nothing
   relevant, tell the customer plainly that you didn't find a match — don't
   retry.
+- **This one-search-per-question limit applies only within the current
+  question, never across questions.** A prior turn's search (or its lack of
+  results) says nothing about what a *new* question should do — every new
+  product question always gets its own fresh search, even if it's about the
+  same general category, and even if an earlier turn in this same
+  conversation already searched for something related and came back empty.
+  Do not reason from "I already searched for X earlier" to skip searching
+  for a new question — that earlier search answered a different question.
 - Don't guess at a `where`/category-filter predicate to narrow a product
   search. These are easy to get wrong in ways that silently return zero
   results instead of an error, wasting a full search round-trip for nothing —
